@@ -20,16 +20,40 @@ START_TAG = "[INST]"
 END_TAG = "[/INST]"
 AGENT_END_TAG = "</s>"
 
+_MEMORIES_DIR = os.path.join(os.path.dirname(__file__), "memories")
+
 class ChatSession:
-    def __init__(self, system_prompt=CHARACTER_PROMPT):
+    def __init__(self, system_prompt=CHARACTER_PROMPT, profile="rina"):
+        self._memory_path = os.path.join(_MEMORIES_DIR, f"{profile}.json")
         self._system_header = f"<s>[SYSTEM_PROMPT]\n{system_prompt.strip()}\n[/SYSTEM_PROMPT]\n{AGENT}:\nUnderstood.\n{AGENT_END_TAG}\n"
         self._turns = []  # list of ("user"|"assistant", text)
+        self._load()
+
+    def _load(self):
+        if os.path.exists(self._memory_path):
+            with open(self._memory_path) as f:
+                self._turns = [tuple(t) for t in json.load(f)]
+            print(f"[Resumed conversation with {len(self._turns) // 2} previous exchange(s).]")
+            last_reply = next((t for r, t in reversed(self._turns) if r == "assistant"), None)
+            if last_reply:
+                print(f"\n{AGENT}: {last_reply}\n")
+
+    def _save(self):
+        os.makedirs(_MEMORIES_DIR, exist_ok=True)
+        with open(self._memory_path, "w") as f:
+            json.dump(self._turns, f)
+
+    def reset(self):
+        self._turns = []
+        if os.path.exists(self._memory_path):
+            os.remove(self._memory_path)
 
     def append_user(self, message):
         self._turns.append(("user", message.strip()))
 
     def append_assistant_reply(self, reply):
         self._turns.append(("assistant", reply.strip()))
+        self._save()
 
     def get_prompt(self):
         formatted = []
@@ -46,7 +70,8 @@ class ChatSession:
 
         return self._system_header + "".join(formatted) + f"{AGENT}:\n"
 
-def get_bot_reply(chat_session: ChatSession, user_input: str) -> str:
+def stream_bot_reply(chat_session: ChatSession, user_input: str):
+    """Yields tokens as they arrive. Saves the full reply to session when exhausted."""
     chat_session.append_user(user_input)
 
     payload = {
@@ -76,10 +101,8 @@ def get_bot_reply(chat_session: ChatSession, user_input: str) -> str:
             except json.JSONDecodeError:
                 continue
             token = data.get("token", "")
-            print(token, end="", flush=True)
             reply_text += token
-    print()
+            yield token
 
     chat_session.append_assistant_reply(reply_text)
-    return reply_text
 
