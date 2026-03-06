@@ -1,6 +1,6 @@
 import requests
 
-API_URL = "http://prototypev24u.chimaera-neon.ts.net:5001/api/v1/generate"
+API_URL = "http://tripu24.chimaera-neon.ts.net:5001/api/v1/generate"
 
 # Character setup message
 AGENT = "Rina"
