@@ -40,7 +40,7 @@ def get_bot_reply(chat_session: ChatSession, user_input: str) -> str:
         "max_tokens": 200,
         "dry_sequence_breakers": "[\"\\n\",\":\",\"\\\"\",\"*\",\"<|start_header_id|>system<|end_header_id|>\",\"<|start_header_id|>assistant<|end_header_id|>\",\"<|start_header_id|>user<|end_header_id|>\",\"<|eot_id|>\"]",
         "api_type": "koboldcpp",
-        "api_server": "http://192.168.2.222:5001/",
+        "api_server": "http://192.168.2.220:5001/",
         "sampler_order": [6, 0, 1, 3, 4, 2, 5],
         "stream": True,
         "include_reasoning": False,

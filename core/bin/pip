@@ -1,4 +1,4 @@
-#!/home/zenny/Nextcloud/AI_Assistant/core/bin/python3
+#!/home/zenny/Nextcloud/ai-at-home/core/bin/python3
 # -*- coding: utf-8 -*-
 import re
 import sys
