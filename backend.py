@@ -1,6 +1,14 @@
+import json
+import os
 import requests
 
-API_URL = "http://tripu24.chimaera-neon.ts.net:5001/api/v1/generate"
+_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
+with open(_CONFIG_PATH) as _f:
+    _config = json.load(_f)
+
+API_URL = _config["api_url"]
+# ~4 chars per token is a conservative estimate; reserves headroom for the response
+_PROMPT_BUDGET = (_config["context_length"] - _config["max_response_tokens"]) * 4
 
 # Character setup message
 AGENT = "Rina"
@@ -14,42 +22,63 @@ AGENT_END_TAG = "</s>"
 
 class ChatSession:
     def __init__(self, system_prompt=CHARACTER_PROMPT):
-        self.history = f"<s>[SYSTEM_PROMPT]\n{system_prompt.strip()}\n[/SYSTEM_PROMPT]\n{AGENT}:\nUnderstood.\n{AGENT_END_TAG}\n"
+        self._system_header = f"<s>[SYSTEM_PROMPT]\n{system_prompt.strip()}\n[/SYSTEM_PROMPT]\n{AGENT}:\nUnderstood.\n{AGENT_END_TAG}\n"
+        self._turns = []  # list of ("user"|"assistant", text)
 
     def append_user(self, message):
-        self.history += f"{START_TAG}{USER}:\n{message.strip()}\n{END_TAG}\n"
-
-    def append_assistant_start(self):
-        self.history += f"{AGENT}:\n"
+        self._turns.append(("user", message.strip()))
 
     def append_assistant_reply(self, reply):
-        self.history += reply.strip() + f"\n{AGENT_END_TAG}\n"
+        self._turns.append(("assistant", reply.strip()))
 
     def get_prompt(self):
-        return self.history
+        formatted = []
+        for role, text in self._turns:
+            if role == "user":
+                formatted.append(f"{START_TAG}{USER}:\n{text}\n{END_TAG}\n")
+            else:
+                formatted.append(f"{AGENT}:\n{text}\n{AGENT_END_TAG}\n")
+
+        # Trim oldest exchange pairs until the prompt fits within budget
+        while len(formatted) >= 2 and len(self._system_header) + sum(len(t) for t in formatted) > _PROMPT_BUDGET:
+            formatted.pop(0)
+            formatted.pop(0)
+
+        return self._system_header + "".join(formatted) + f"{AGENT}:\n"
 
 def get_bot_reply(chat_session: ChatSession, user_input: str) -> str:
     chat_session.append_user(user_input)
-    chat_session.append_assistant_start()
 
     payload = {
         "prompt": chat_session.get_prompt(),
-        #Make editable later
-        "temperature": 0.7,
-        "top_p": 0.9,
-        "max_tokens": 200,
-        "dry_sequence_breakers": "[\"\\n\",\":\",\"\\\"\",\"*\",\"<|start_header_id|>system<|end_header_id|>\",\"<|start_header_id|>assistant<|end_header_id|>\",\"<|start_header_id|>user<|end_header_id|>\",\"<|eot_id|>\"]",
-        "api_type": "koboldcpp",
-        "api_server": "http://192.168.2.220:5001/",
+        "temperature": _config["temperature"],
+        "top_p": _config["top_p"],
+        "max_length": _config["max_response_tokens"],
+        "dry_sequence_breakers": "[\"\\n\",\":\",\"\\\"\",\"*\"]",
         "sampler_order": [6, 0, 1, 3, 4, 2, 5],
-        "stream": True,
-        "include_reasoning": False,
-        "stop_sequence": ["AGENT_END_TAG"],
+        "stop_sequence": [AGENT_END_TAG, START_TAG],
     }
 
-    response = requests.post(API_URL, json=payload)
-    response.raise_for_status()
-    reply_text = response.json()['results'][0]['text'].strip()
+    reply_text = ""
+    with requests.post(API_URL, json=payload, stream=True, timeout=(10, 180)) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if not line:
+                continue
+            text = line.decode("utf-8")
+            if not text.startswith("data: "):
+                continue
+            payload_str = text[6:]
+            if payload_str == "[DONE]":
+                break
+            try:
+                data = json.loads(payload_str)
+            except json.JSONDecodeError:
+                continue
+            token = data.get("token", "")
+            print(token, end="", flush=True)
+            reply_text += token
+    print()
 
     chat_session.append_assistant_reply(reply_text)
     return reply_text

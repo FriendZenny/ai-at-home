@@ -1,4 +1,4 @@
-from backend import ChatSession, get_bot_reply
+from backend import AGENT, ChatSession, get_bot_reply
 
 def main():
     print("Rina is ready. Type 'exit' to quit.")
@@ -8,8 +8,12 @@ def main():
         user_input = input("You: ")
         if user_input.lower() == "exit":
             break
-        reply = get_bot_reply(session, user_input)
-        print(f"\nRina: {reply}\n")
+        print(f"\n{AGENT}: ", end="", flush=True)
+        try:
+            get_bot_reply(session, user_input)
+        except Exception as e:
+            print(f"\n[Error: {e}]")
+        print()
 
 if __name__ == "__main__":
     main()
