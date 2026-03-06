@@ -3,7 +3,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/core"
 REQUIREMENTS="$SCRIPT_DIR/requirements.txt"
-MAIN="$SCRIPT_DIR/main.py"
+MAIN="$SCRIPT_DIR/gui/window.py"
 
 # Create venv if it doesn't exist
 if [ ! -d "$VENV_DIR" ]; then
