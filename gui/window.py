@@ -11,11 +11,17 @@ from PyQt6.QtWidgets import (
 
 # Allow running from project root or gui/ directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from cortex import AGENT, USER, CONTEXT_LENGTH, ChatSession, stream_bot_reply
+from cortex import AGENT, USER, CONTEXT_LENGTH, ChatSession, stream_bot_reply, detect_emotion
 
 _AVATAR_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "avatar-assets", "rina",
+)
+# Emotion states derived from available avatar images (filename without extension)
+_EMOTIONS = sorted(
+    os.path.splitext(f)[0]
+    for f in os.listdir(_AVATAR_DIR)
+    if f.endswith(".png")
 )
 
 _STYLESHEET = """
@@ -65,6 +71,19 @@ QPushButton#resetBtn:hover {
 QPushButton#resetBtn:disabled {
     color: #3a1a28;
     border-color: #1a0a14;
+}
+
+QPushButton#regenBtn {
+    color: #ffd080;
+    border-color: #4a3a10;
+}
+QPushButton#regenBtn:hover {
+    background-color: #2a200a;
+    border-color: #ffd080;
+}
+QPushButton#regenBtn:disabled {
+    color: #3a2e10;
+    border-color: #1e1608;
 }
 
 QPushButton#scrollBtn {
@@ -260,6 +279,19 @@ class ReplyWorker(QThread):
         self.finished.emit()
 
 
+class EmotionWorker(QThread):
+    detected = pyqtSignal(str)
+
+    def __init__(self, reply_text, emotions):
+        super().__init__()
+        self.reply_text = reply_text
+        self.emotions = emotions
+
+    def run(self):
+        emotion = detect_emotion(self.reply_text, self.emotions)
+        self.detected.emit(emotion)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -305,6 +337,13 @@ class MainWindow(QMainWindow):
         self.send_button = QPushButton("Send")
         self.send_button.clicked.connect(self._send)
         bottom.addWidget(self.send_button)
+
+        self.regen_button = QPushButton("Regen")
+        self.regen_button.setObjectName("regenBtn")
+        self.regen_button.setToolTip("Regenerate last reply")
+        self.regen_button.clicked.connect(self._regen)
+        self.regen_button.setEnabled(False)
+        bottom.addWidget(self.regen_button)
 
         self.reset_button = QPushButton("Reset")
         self.reset_button.setObjectName("resetBtn")
@@ -410,8 +449,54 @@ class MainWindow(QMainWindow):
         ts = datetime.now().strftime("%H:%M")
         self.input_field.clear()
         self._append_message(USER, user_input, ts=ts)
+        self._dispatch_reply(user_input)
 
-        # Insert the agent label; tokens will stream in after it
+    def _on_token(self, token):
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(token)
+        self.chat_display.setTextCursor(cursor)
+        self.chat_display.ensureCursorVisible()
+
+    def _on_finished(self):
+        self.chat_display.append("<br>")
+        self._update_token_count()
+        self._set_input_enabled(True)
+        self._update_regen_button()
+        self.input_field.setFocus()
+
+        last_reply = next((t for r, t in reversed(self.session._turns) if r == "assistant"), None)
+        if last_reply:
+            self._emotion_worker = EmotionWorker(last_reply, _EMOTIONS)
+            self._emotion_worker.detected.connect(self._set_avatar)
+            self._emotion_worker.start()
+
+    def _on_error(self, msg):
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml(f"<br><i style='color:#ff6b6b'>[Error: {msg}]</i>")
+        self.chat_display.setTextCursor(cursor)
+        self._set_input_enabled(True)
+
+    # --- Regen / Reset / helpers ---
+
+    def _regen(self):
+        user_text = self.session.pop_last_exchange()
+        if user_text is None:
+            return
+        # Redraw history without the popped exchange
+        self.chat_display.clear()
+        for role, text in self.session._turns:
+            speaker = USER if role == "user" else AGENT
+            self._append_message(speaker, text)
+        self._update_token_count()
+        self._update_regen_button()
+        # Re-display the user message, then stream a new reply
+        self._append_message(USER, user_text)
+        self._dispatch_reply(user_text)
+
+    def _dispatch_reply(self, user_input):
+        """Insert the agent header and start streaming a reply for user_input."""
         ts_reply = datetime.now().strftime("%H:%M")
         self.chat_display.append(
             f'<span style="color:{_TS_COLOR}; font-size:0.85em">{ts_reply}</span> '
@@ -428,39 +513,25 @@ class MainWindow(QMainWindow):
         self.worker.error.connect(self._on_error)
         self.worker.start()
 
-    def _on_token(self, token):
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(token)
-        self.chat_display.setTextCursor(cursor)
-        self.chat_display.ensureCursorVisible()
-
-    def _on_finished(self):
-        self.chat_display.append("<br>")
-        self._update_token_count()
-        self._set_input_enabled(True)
-        self.input_field.setFocus()
-
-    def _on_error(self, msg):
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertHtml(f"<br><i style='color:#ff6b6b'>[Error: {msg}]</i>")
-        self.chat_display.setTextCursor(cursor)
-        self._set_input_enabled(True)
-
-    # --- Reset / helpers ---
-
     def _reset(self):
         self.session.reset()
         self.chat_display.clear()
         self.input_field.clear()
         self._set_avatar("default")
         self._update_token_count()
+        self._update_regen_button()
+
+    def _update_regen_button(self):
+        can = (len(self.session._turns) >= 2
+               and self.session._turns[-1][0] == "assistant")
+        self.regen_button.setEnabled(can)
 
     def _set_input_enabled(self, enabled: bool):
         self.input_field.setEnabled(enabled)
         self.send_button.setEnabled(enabled)
         self.reset_button.setEnabled(enabled)
+        if not enabled:
+            self.regen_button.setEnabled(False)
 
 
 def run():

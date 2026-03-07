@@ -49,6 +49,21 @@ class ChatSession:
         if os.path.exists(self._memory_path):
             os.remove(self._memory_path)
 
+    def pop_last_exchange(self):
+        """Remove the last assistant reply and the preceding user message.
+
+        Returns the user message text so the caller can re-send it, or None
+        if there is no complete exchange to pop.
+        """
+        if (len(self._turns) >= 2
+                and self._turns[-1][0] == "assistant"
+                and self._turns[-2][0] == "user"):
+            self._turns.pop()             # drop assistant reply
+            _, user_text = self._turns.pop()  # drop user turn, keep text
+            self._save()
+            return user_text
+        return None
+
     def append_user(self, message):
         self._turns.append(("user", message.strip()))
 
@@ -115,3 +130,48 @@ def stream_bot_reply(chat_session: ChatSession, user_input: str):
 
     chat_session.append_assistant_reply(reply_text)
 
+
+def detect_emotion(reply_text: str, emotions: list) -> str:
+    """Ask the model to classify reply_text into one of the available emotion labels.
+
+    Returns one of the strings in `emotions`, falling back to 'default' on any failure.
+    """
+    emotion_list = ", ".join(emotions)
+    prompt = (
+        f"{START_TAG}Classify the emotional tone of the following text. "
+        f"Reply with exactly one word from this list: {emotion_list}. "
+        f"Do not explain. Just the one word.\n\n"
+        f"Text:\n\"{reply_text[:600]}\"\n{END_TAG}\n"
+        f"Emotion:"
+    )
+    payload = {
+        "prompt": prompt,
+        "max_length": 8,
+        "temperature": 0.1,
+        "top_p": 1.0,
+        "sampler_order": [6, 0, 1, 3, 4, 2, 5],
+        "stop_sequence": ["\n", START_TAG, AGENT_END_TAG],
+    }
+    result = ""
+    try:
+        with requests.post(API_URL, json=payload, stream=True, timeout=(10, 30)) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                text = line.decode("utf-8")
+                if not text.startswith("data: "):
+                    continue
+                payload_str = text[6:]
+                if payload_str == "[DONE]":
+                    break
+                try:
+                    data = json.loads(payload_str)
+                except json.JSONDecodeError:
+                    continue
+                result += data.get("token", "")
+    except Exception:
+        return "default"
+
+    word = result.strip().lower().split()[0] if result.strip() else "default"
+    return word if word in emotions else "default"
