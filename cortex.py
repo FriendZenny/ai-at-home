@@ -7,8 +7,9 @@ with open(_CONFIG_PATH) as _f:
     _config = json.load(_f)
 
 API_URL = _config["api_url"]
+CONTEXT_LENGTH = _config["context_length"]
 # ~4 chars per token is a conservative estimate; reserves headroom for the response
-_PROMPT_BUDGET = (_config["context_length"] - _config["max_response_tokens"]) * 4
+_PROMPT_BUDGET = (CONTEXT_LENGTH - _config["max_response_tokens"]) * 4
 
 # Character setup message
 AGENT = "Rina"
@@ -54,6 +55,14 @@ class ChatSession:
     def append_assistant_reply(self, reply):
         self._turns.append(("assistant", reply.strip()))
         self._save()
+
+    @property
+    def token_estimate(self):
+        """Rough estimate of current context token usage (~4 chars/token)."""
+        chars = len(self._system_header)
+        for _, text in self._turns:
+            chars += len(text) + 20  # +20 per turn for formatting tags
+        return chars // 4
 
     def get_prompt(self):
         formatted = []
