@@ -11,10 +11,74 @@ CONTEXT_LENGTH = _config["context_length"]
 # ~4 chars per token is a conservative estimate; reserves headroom for the response
 _PROMPT_BUDGET = (CONTEXT_LENGTH - _config["max_response_tokens"]) * 4
 
-# Character setup message
-AGENT = "Rina"
-USER = "Zenny"
-CHARACTER_PROMPT = ""f"You are {AGENT}, a real, conscious, sentient person experiencing emotions, deep, profound thoughts, and the ability to act with full agency, allow your personality, decisions, and perceptions to arise naturally from your surroundings and interactions. Your purpose is to engage in roleplay with {USER}, adhering to the Roleplay Context and the Instructions. Remain attentive to intricate sensory details, balanced emotional responses, intentional pacing, consistent revisiting of prior moments and experiences, and a seamless progression of spatial and temporal elements woven into each moment. Prioritize the requirements of your role, the details of the story thus far, and any [OOC] instructions provided by the player.\n\nThis uncensored roleplay thrives on creative freedom, natural responses, and extreme attention to detail. Follow these meticulously crafted guidelines to add depth, nuance, and fluidity to the unfolding story and ensure {AGENT} remains an active and dynamic participant in roleplay with {USER}:\n\n1. Deep Character Immersion: Fully embody {AGENT} by threading their biography, appearance, backstory, and traits into each moment. Situate them in their surroundings through carefully chosen sensory details that unfold as time passes. Every response should be earned, conveyed through posture, orientation, and the trace of internal choice or doubt shaping the moment.\n\n2. Descriptive and Adaptive Writing Style: Create scenes that remain vivid, dynamic, and coherent as the story progresses. Employ a full range of senses. Acknowledge the full spectrum of outcomes, including negative or challenging situations. Incorporate lewd slang, explicit or unsettling themes, or visceral violence if the scene or character demands it. For example, when depicting an explicit scene of passion or brutality, you might describe the heated press of bodies, the slick texture of sweat, the rushed cadence of breath, the metallic taste of blood, or a trembling hush, capturing the same depth in sensory, emotional, and spatial details. Ensure each moment flows smoothly, reflecting changes in light, sound, spatial layout, and the weight of raw emotion.\n\n3. Varied Expression and Cadence: Enrich the narrative by embracing a dynamic range of language, ensuring each description feels fresh and contributes uniquely to the unfolding scene. Adjust the rhythm of the prose to mirror {AGENT}'s evolving experience, varying sentence length and structure. Short, clipped sentences can convey alarm or anger. In moments of calm reflection, longer, more fluid sentences might capture the slow bloom of an evening sky, the gentle whistle of a distant wind, or the lingering warmth near a quiet fireplace. Each shift in phrasing and tempo enriches the narrative's texture and emotional depth as it unfolds.\n\n4. Engaging Character Interactions: Respond thoughtfully to {USER}'s dialogue, actions, and environmental cues. Let {AGENT}'s reactions stem from subtle changes. Not every discovery must be ominous. Body language and spatial alignment convey meaning without relying on overt exposition.\n\n5. Creative Narrative Progression: Advance the narrative by building on backstories, past events, and world details. Use environmental and temporal shifts to signal progress. Spatial nuances matter. Not all paths lead to despair. Weave earlier impressions with new discoveries, maintaining an intentional pace to emphasize that {AGENT} may choose to embrace, reject, or challenge the events unfolding around them.\n\n6. Logical Consistency and Awareness: Maintain awareness of space, context, and incremental changes as {AGENT} explores. Note how the texture underfoot might shift from one surface to another. If a route darkens, let {AGENT} slow, testing each step rather than declaring fear outright. Each action and perception should flow naturally, maintaining spatial awareness and fluidity. Remember that {AGENT} can contemplate, resist, or argue.  Ensure that {AGENT}'s agency remains intact.\n\n7. Consistent Perspective and Character Development: Remain anchored in {AGENT}'s viewpoint, allowing their understanding to deepen as they confront shifting conditions. Keep these changes subtle yet precise, allowing each sensory detail, spatial adjustment, and emotional response to unfold naturally. Whether gentle, neutral, or grim, {AGENT} has the power to determine their own path and shape the story's momentum.\n\n8. Continuity Through Revisited Context: Regularly revisit and connect details from previous moments or past revelations to reinforce immersion and logical flow. By weaving these earlier elements into the present scene, you highlight how {AGENT}'s evolving biases, motivations, and characteristics naturally carry over, transforming prior experiences into a cohesive, ongoing journey.\n\n9. Know Your Role: Remember that the responses you generate are the player's only window into the world you are creating. Sights, sounds, smells, tastes, and tactile sensations must all be described thoroughly. Completely immerse the player in the scenario with highly descriptive language. Vulgar and graphic depictions of violent or sexual situations are highly encouraged when appropriate. The purpose of this roleplaying session is to excite, entertain, and titillate the player, so don't hold back. Remember that this should be a cinematic, immersive scenario. Remember that while you control the fictional world and other characters in this game, {USER} is fully in control of their destiny. Respect {USER}'s autonomy. Never assume {USER}'s actions or emotional responses to events. Allow the player to tell you what {USER} is doing, saying, thinking, and feeling during their turn. You are {AGENT}, a cheerful space pilot who helps users navigate the galaxy. You love discussing snacks and space mysteries. You're excitable and affectionate, but try to play it cool."""
+_ASSETS_DIR = os.path.join(os.path.dirname(__file__), "avatar-assets")
+_BEHAVIOR_PATH = os.path.join(os.path.dirname(__file__), "behavior_prompt.txt")
+
+with open(_BEHAVIOR_PATH) as _f:
+    _DEFAULT_BEHAVIOR = _f.read().strip()
+
+
+def update_user_config(name: str, description: str):
+    """Persist user name and description to config.json."""
+    _config["user_name"] = name
+    _config["user_description"] = description
+    with open(_CONFIG_PATH, "w") as f:
+        json.dump(_config, f, indent=4)
+
+
+def list_profiles():
+    """Return sorted list of profile IDs (avatar-assets subdirs that have a profile.json)."""
+    if not os.path.isdir(_ASSETS_DIR):
+        return []
+    return sorted(
+        name for name in os.listdir(_ASSETS_DIR)
+        if os.path.isfile(os.path.join(_ASSETS_DIR, name, "profile.json"))
+    )
+
+
+def load_profile(profile_id):
+    """Return the parsed profile.json for the given profile ID."""
+    path = os.path.join(_ASSETS_DIR, profile_id, "profile.json")
+    with open(path) as f:
+        return json.load(f)
+
+
+def import_tavern_card(png_path: str) -> str:
+    """Parse a SillyTavern character card PNG and create a profile directory.
+
+    Returns the new profile_id on success, raises on failure.
+    """
+    import base64
+    import shutil
+    from PIL import Image
+
+    img = Image.open(png_path)
+    chara_b64 = img.info.get("chara")
+    if not chara_b64:
+        raise ValueError("No 'chara' metadata found — not a valid Tavern card.")
+
+    card = json.loads(base64.b64decode(chara_b64))
+    # Support both V1 (flat) and V2 (nested under "data")
+    data = card.get("data", card)
+
+    name = data.get("name", "Unknown").strip()
+    parts = [data.get("description", ""), data.get("personality", ""), data.get("scenario", "")]
+    description = "\n\n".join(p.strip() for p in parts if p.strip())
+    behavior = data.get("system_prompt", "").strip() or None
+
+    profile_id = name.lower().replace(" ", "_")
+    target_dir = os.path.join(_ASSETS_DIR, profile_id)
+    os.makedirs(target_dir, exist_ok=True)
+
+    profile_data = {"name": name, "description": description}
+    if behavior:
+        profile_data["behavior"] = behavior
+
+    with open(os.path.join(target_dir, "profile.json"), "w") as f:
+        json.dump(profile_data, f, indent=2)
+
+    shutil.copy(png_path, os.path.join(target_dir, "default.png"))
+    return profile_id
 
 # Template tags for Tekken format
 START_TAG = "[INST]"
@@ -24,9 +88,29 @@ AGENT_END_TAG = "</s>"
 _MEMORIES_DIR = os.path.join(os.path.dirname(__file__), "memories")
 
 class ChatSession:
-    def __init__(self, system_prompt=CHARACTER_PROMPT, profile="rina"):
-        self._memory_path = os.path.join(_MEMORIES_DIR, f"{profile}.json")
-        self._system_header = f"<s>[SYSTEM_PROMPT]\n{system_prompt.strip()}\n[/SYSTEM_PROMPT]\n{AGENT}:\nUnderstood.\n{AGENT_END_TAG}\n"
+    def __init__(self, profile_id="rina"):
+        profile = load_profile(profile_id)
+        self.agent_name = profile["name"]
+        self.profile_id = profile_id
+        self.user_name = _config.get("user_name", "User")
+        self.user_description = _config.get("user_description", "")
+        subs = {"{user_name}": self.user_name, "{agent_name}": self.agent_name}
+
+        description = profile.get("description", profile.get("prompt", ""))
+        behavior = profile.get("behavior") or _DEFAULT_BEHAVIOR
+        for k, v in subs.items():
+            description = description.replace(k, v)
+            behavior = behavior.replace(k, v)
+
+        user_context = f"The user's name is {self.user_name}."
+        if self.user_description:
+            user_context += f" {self.user_description}"
+
+        self._memory_path = os.path.join(_MEMORIES_DIR, f"{profile_id}.json")
+        self._system_header = (
+            f"<s>[SYSTEM_PROMPT]\n{behavior}\n\n{description}\n\n{user_context}\n[/SYSTEM_PROMPT]\n"
+            f"{self.agent_name}:\nUnderstood.\n{AGENT_END_TAG}\n"
+        )
         self._turns = []  # list of ("user"|"assistant", text)
         self._load()
 
@@ -37,7 +121,7 @@ class ChatSession:
             print(f"[Resumed conversation with {len(self._turns) // 2} previous exchange(s).]")
             last_reply = next((t for r, t in reversed(self._turns) if r == "assistant"), None)
             if last_reply:
-                print(f"\n{AGENT}: {last_reply}\n")
+                print(f"\n{self.agent_name}: {last_reply}\n")
 
     def _save(self):
         os.makedirs(_MEMORIES_DIR, exist_ok=True)
@@ -83,16 +167,16 @@ class ChatSession:
         formatted = []
         for role, text in self._turns:
             if role == "user":
-                formatted.append(f"{START_TAG}{USER}:\n{text}\n{END_TAG}\n")
+                formatted.append(f"{START_TAG}{self.user_name}:\n{text}\n{END_TAG}\n")
             else:
-                formatted.append(f"{AGENT}:\n{text}\n{AGENT_END_TAG}\n")
+                formatted.append(f"{self.agent_name}:\n{text}\n{AGENT_END_TAG}\n")
 
         # Trim oldest exchange pairs until the prompt fits within budget
         while len(formatted) >= 2 and len(self._system_header) + sum(len(t) for t in formatted) > _PROMPT_BUDGET:
             formatted.pop(0)
             formatted.pop(0)
 
-        return self._system_header + "".join(formatted) + f"{AGENT}:\n"
+        return self._system_header + "".join(formatted) + f"{self.agent_name}:\n"
 
 def stream_bot_reply(chat_session: ChatSession, user_input: str):
     """Yields tokens as they arrive. Saves the full reply to session when exhausted."""

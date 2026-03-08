@@ -1,28 +1,31 @@
+import json
 import os
 import sys
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, QEvent, QThread, pyqtSignal
-from PyQt6.QtGui import QFont, QPixmap, QTextCursor
+from PyQt6.QtCore import Qt, QEvent, QThread, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QFont, QPixmap, QTextCursor
 from PyQt6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel,
-    QMainWindow, QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QHBoxLayout, QInputDialog, QLabel,
+    QMainWindow, QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
 # Allow running from project root or gui/ directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from cortex import AGENT, USER, CONTEXT_LENGTH, ChatSession, stream_bot_reply, detect_emotion
+from cortex import CONTEXT_LENGTH, _ASSETS_DIR, ChatSession, list_profiles, update_user_config, import_tavern_card, stream_bot_reply, detect_emotion
 
-_AVATAR_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "avatar-assets", "rina",
-)
-# Emotion states derived from available avatar images (filename without extension)
-_EMOTIONS = sorted(
-    os.path.splitext(f)[0]
-    for f in os.listdir(_AVATAR_DIR)
-    if f.endswith(".png")
-)
+
+def _avatar_dir(profile_id):
+    return os.path.join(_ASSETS_DIR, profile_id)
+
+
+def _emotions_for(profile_id):
+    d = _avatar_dir(profile_id)
+    return sorted(
+        os.path.splitext(f)[0]
+        for f in os.listdir(d)
+        if f.endswith(".png")
+    )
 
 _STYLESHEET = """
 QMainWindow, QWidget {
@@ -109,6 +112,24 @@ QPushButton#tokenToggle {
 }
 QPushButton#tokenToggle:hover {
     color: #4dd9ff;
+}
+
+QComboBox#tokenToggle {
+    background: transparent;
+    color: #3d5d8a;
+    border: none;
+    padding: 0 4px;
+    font-size: 12px;
+}
+QComboBox#tokenToggle:hover {
+    color: #4dd9ff;
+}
+QComboBox#tokenToggle::drop-down { border: none; }
+QComboBox#tokenToggle QAbstractItemView {
+    background-color: #0e0e28;
+    color: #c8d8ff;
+    selection-background-color: #2d2d6e;
+    border: 1px solid #1a1a3e;
 }
 
 QScrollBar:vertical {
@@ -295,11 +316,13 @@ class EmotionWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(AGENT)
         self.session = ChatSession()
+        self._avatar_dir = _avatar_dir(self.session.profile_id)
+        self._emotions = _emotions_for(self.session.profile_id)
         self.worker = None
         self._build_ui()
         self._build_statusbar()
+        self.setWindowTitle(self.session.agent_name)
         self._set_avatar("default")
         self._load_history()
 
@@ -383,6 +406,20 @@ class MainWindow(QMainWindow):
         font_up.clicked.connect(lambda: self.chat_display.zoomIn(1))
         sb.addPermanentWidget(font_up)
 
+        user_btn = QPushButton("User...")
+        user_btn.setObjectName("tokenToggle")
+        user_btn.setFixedHeight(18)
+        user_btn.setToolTip("Edit user name and description")
+        user_btn.clicked.connect(self._edit_user)
+        sb.addPermanentWidget(user_btn)
+
+        self._profile_combo = QComboBox()
+        self._profile_combo.setObjectName("tokenToggle")
+        self._profile_combo.setToolTip("Switch character profile")
+        self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        sb.addPermanentWidget(self._profile_combo)
+        self._refresh_profile_combo()
+
     def _update_token_count(self):
         est = self.session.token_estimate
         self._token_label.setText(f"~{est:,} / {CONTEXT_LENGTH:,} ctx tokens")
@@ -391,9 +428,9 @@ class MainWindow(QMainWindow):
 
     def _set_avatar(self, state="default"):
         self._avatar_state = state
-        path = os.path.join(_AVATAR_DIR, f"{state}.png")
+        path = os.path.join(self._avatar_dir, f"{state}.png")
         if not os.path.exists(path):
-            path = os.path.join(_AVATAR_DIR, "default.png")
+            path = os.path.join(self._avatar_dir, "default.png")
         self._avatar_pixmap = QPixmap(path)
         self._refresh_avatar()
 
@@ -422,14 +459,14 @@ class MainWindow(QMainWindow):
 
     def _load_history(self):
         for role, text in self.session._turns:
-            speaker = USER if role == "user" else AGENT
+            speaker = self.session.user_name if role == "user" else self.session.agent_name
             self._append_message(speaker, text)
         self._update_token_count()
 
     def _append_message(self, speaker, text, ts=None):
         if ts is None:
             ts = datetime.now().strftime("%H:%M")
-        color = _COLOR_USER if speaker == USER else _COLOR_AGENT
+        color = _COLOR_USER if speaker == self.session.user_name else _COLOR_AGENT
         self.chat_display.append(
             f'<span style="color:{_TS_COLOR}; font-size:0.85em">{ts}</span> '
             f'<b style="color:{color}">{speaker}:</b> {text}<br>'
@@ -448,7 +485,7 @@ class MainWindow(QMainWindow):
 
         ts = datetime.now().strftime("%H:%M")
         self.input_field.clear()
-        self._append_message(USER, user_input, ts=ts)
+        self._append_message(self.session.user_name, user_input, ts=ts)
         self._dispatch_reply(user_input)
 
     def _on_token(self, token):
@@ -467,7 +504,7 @@ class MainWindow(QMainWindow):
 
         last_reply = next((t for r, t in reversed(self.session._turns) if r == "assistant"), None)
         if last_reply:
-            self._emotion_worker = EmotionWorker(last_reply, _EMOTIONS)
+            self._emotion_worker = EmotionWorker(last_reply, self._emotions)
             self._emotion_worker.detected.connect(self._set_avatar)
             self._emotion_worker.start()
 
@@ -487,12 +524,12 @@ class MainWindow(QMainWindow):
         # Redraw history without the popped exchange
         self.chat_display.clear()
         for role, text in self.session._turns:
-            speaker = USER if role == "user" else AGENT
+            speaker = self.session.user_name if role == "user" else self.session.agent_name
             self._append_message(speaker, text)
         self._update_token_count()
         self._update_regen_button()
         # Re-display the user message, then stream a new reply
-        self._append_message(USER, user_text)
+        self._append_message(self.session.user_name, user_text)
         self._dispatch_reply(user_text)
 
     def _dispatch_reply(self, user_input):
@@ -500,7 +537,7 @@ class MainWindow(QMainWindow):
         ts_reply = datetime.now().strftime("%H:%M")
         self.chat_display.append(
             f'<span style="color:{_TS_COLOR}; font-size:0.85em">{ts_reply}</span> '
-            f'<b style="color:{_COLOR_AGENT}">{AGENT}:</b> '
+            f'<b style="color:{_COLOR_AGENT}">{self.session.agent_name}:</b> '
         )
         cursor = self.chat_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -512,6 +549,121 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._on_finished)
         self.worker.error.connect(self._on_error)
         self.worker.start()
+
+    def _refresh_profile_combo(self):
+        combo = self._profile_combo
+        combo.blockSignals(True)
+        combo.clear()
+        for pid in list_profiles():
+            combo.addItem(pid.capitalize(), pid)
+        combo.insertSeparator(combo.count())
+        combo.addItem("New character...", "__new__")
+        combo.addItem("Import Tavern card...", "__import__")
+        combo.addItem("Open folder...", "__open__")
+        combo.setCurrentIndex(combo.findData(self.session.profile_id))
+        combo.blockSignals(False)
+
+    def _on_profile_changed(self, index):
+        profile_id = self._profile_combo.itemData(index)
+        if profile_id == "__new__":
+            self._create_profile()
+        elif profile_id == "__import__":
+            self._import_tavern_card()
+        elif profile_id == "__open__":
+            self._open_profile_folder()
+            # Reset selection back to current profile
+            self._profile_combo.blockSignals(True)
+            self._profile_combo.setCurrentIndex(
+                self._profile_combo.findData(self.session.profile_id)
+            )
+            self._profile_combo.blockSignals(False)
+        elif profile_id and profile_id != self.session.profile_id:
+            self._switch_profile(profile_id)
+
+    def _create_profile(self):
+        name, ok = QInputDialog.getText(
+            self, "New Character", "Character name:"
+        )
+        if not ok or not name.strip():
+            self._refresh_profile_combo()
+            return
+        name = name.strip()
+        profile_id = name.lower().replace(" ", "_")
+        target_dir = _avatar_dir(profile_id)
+        if os.path.exists(target_dir):
+            QMessageBox.warning(self, "Exists", f"Profile '{profile_id}' already exists.")
+            self._refresh_profile_combo()
+            return
+        os.makedirs(target_dir)
+        profile_data = {
+            "name": name,
+            "prompt": f"You are {name}, a helpful and friendly AI companion."
+        }
+        with open(os.path.join(target_dir, "profile.json"), "w") as f:
+            json.dump(profile_data, f, indent=2)
+        self._refresh_profile_combo()
+        self._switch_profile(profile_id)
+        # Open the folder so the user can drop avatar images in
+        QDesktopServices.openUrl(QUrl.fromLocalFile(target_dir))
+
+    def _import_tavern_card(self):
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Tavern Card", "", "PNG Images (*.png)"
+        )
+        if not path:
+            self._refresh_profile_combo()
+            return
+        try:
+            profile_id = import_tavern_card(path)
+        except Exception as e:
+            QMessageBox.critical(self, "Import Failed", str(e))
+            self._refresh_profile_combo()
+            return
+        self._refresh_profile_combo()
+        self._switch_profile(profile_id)
+
+    def _open_profile_folder(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(_avatar_dir(self.session.profile_id)))
+
+    def _edit_user(self):
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLineEdit
+        dlg = QDialog(self)
+        dlg.setWindowTitle("User Settings")
+        form = QFormLayout(dlg)
+
+        name_edit = QLineEdit(self.session.user_name)
+        desc_edit = QLineEdit(self.session.user_description)
+        desc_edit.setPlaceholderText("Short description (optional)")
+        form.addRow("Your name:", name_edit)
+        form.addRow("About you:", desc_edit)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        name = name_edit.text().strip() or self.session.user_name
+        description = desc_edit.text().strip()
+        update_user_config(name, description)
+        # Reinit session to pick up new user info
+        self._switch_profile(self.session.profile_id)
+
+    def _switch_profile(self, profile_id):
+        self.session = ChatSession(profile_id)
+        self._avatar_dir = _avatar_dir(profile_id)
+        self._emotions = _emotions_for(profile_id)
+        self.setWindowTitle(self.session.agent_name)
+        self.chat_display.clear()
+        self.input_field.clear()
+        self._set_avatar("default")
+        self._load_history()
+        self._update_regen_button()
+        self._refresh_profile_combo()
 
     def _reset(self):
         self.session.reset()
